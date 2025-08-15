@@ -4,4 +4,4 @@ requests
 Pillow
 pydub
 SpeechRecognition
-Tempmail
+tempmail==3.0
