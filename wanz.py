@@ -416,15 +416,22 @@ async def broadcast(event):
 
     await m.edit(f"🚀 Memulai broadcast ke {len(targets)} chat...")
 
+    # Jika pesan berupa teks, kirim ke diri sendiri dulu agar bisa di-forward
+    if isinstance(message_to_send, str):
+        try:
+            sent_msg = await client.send_message(me.id, message_to_send)
+            message_to_send = sent_msg
+        except Exception as e:
+            await m.edit(f"❌ Gagal mengirim pesan awal untuk diforward: {e}")
+            return
+
     successful_sends = 0
     failed_sends = 0
 
     for target_id in targets:
         try:
-            if isinstance(message_to_send, str):
-                await client.send_message(target_id, message_to_send)
-            else: # Forward message
-                await client.forward_messages(target_id, message_to_send)
+            # Selalu forward pesan untuk menampilkan "Pesan Diteruskan"
+            await client.forward_messages(target_id, message_to_send)
             successful_sends += 1
         except Exception:
             failed_sends += 1
