@@ -154,6 +154,10 @@ f"⚜️ONLY BASE BY MAVERICK⚜️\nMODE: {mode_text}\n\n"
 "/clone <@user/balas> - clone user\n"
 "/unclone <@user/balas> - hapus clone\n"
 "/clonelist - lihat daftar clone\n"
+"╠══════════════ BROADCAST ═════════════╣\n"
+"/cekuser - Cek semua pengguna\n"
+"/cekgroup - Cek semua grup\n"
+"/broadcast <msg> | <id> - Broadcast pesan\n"
 "╠══════════════ SEARCH ════════════════╣\n"
 "/ttsearch <kata>\n/ytsearch <kata>\n/pinterest <kata>\n/github <username>\n"
 "╠══════════════ DOWNLOADER ════════════╣\n"
@@ -292,6 +296,146 @@ async def list_clones(event):
         except Exception:
             text += f"- ❗️ Gagal mengambil info untuk ID `{user_id}`\n"
     await m.edit(text)
+
+@client.on(events.NewMessage(pattern=r'^/cekuser$'))
+async def cek_user(event):
+    sender = await event.get_sender()
+    if not await is_authorized(sender): return
+    m = await event.reply("🔄 Mengambil daftar pengguna...")
+    users = []
+    try:
+        async for dialog in client.iter_dialogs():
+            if dialog.is_user and not dialog.entity.bot:
+                users.append(f"- {dialog.name} (`{dialog.id}`)")
+
+        if not users:
+            await m.edit("Tidak ada pengguna yang ditemukan.")
+            return
+
+        output_message = "👤 **Daftar Pengguna:**\n\n" + "\n".join(users)
+
+        if len(output_message) > 4096:
+            await m.edit("Jumlah pengguna terlalu banyak, mengirim sebagai file...")
+            with io.StringIO(output_message) as f:
+                f.name = "users.txt"
+                await client.send_file(event.chat_id, f, caption="Daftar Pengguna")
+            await m.delete()
+        else:
+            await m.edit(output_message)
+
+    except Exception as e:
+        await m.edit(f"❌ Error: {e}")
+
+@client.on(events.NewMessage(pattern=r'^/cekgroup$'))
+async def cek_group(event):
+    sender = await event.get_sender()
+    if not await is_authorized(sender): return
+    m = await event.reply("🔄 Mengambil daftar grup...")
+    groups = []
+    try:
+        async for dialog in client.iter_dialogs():
+            if dialog.is_group or dialog.is_channel:
+                groups.append(f"- {dialog.name} (`{dialog.id}`)")
+
+        if not groups:
+            await m.edit("Tidak ada grup yang ditemukan.")
+            return
+
+        output_message = "👥 **Daftar Grup:**\n\n" + "\n".join(groups)
+
+        if len(output_message) > 4096:
+            await m.edit("Jumlah grup terlalu banyak, mengirim sebagai file...")
+            with io.StringIO(output_message) as f:
+                f.name = "groups.txt"
+                await client.send_file(event.chat_id, f, caption="Daftar Grup")
+            await m.delete()
+        else:
+            await m.edit(output_message)
+
+    except Exception as e:
+        await m.edit(f"❌ Error: {e}")
+
+@client.on(events.NewMessage(pattern=r'^/broadcast(?:\s+(.*))?$', outgoing=True))
+async def broadcast(event):
+    if not await is_owner(await event.get_sender()): return
+
+    input_str = event.pattern_match.group(1)
+    reply_msg = await event.get_reply_message()
+
+    if not input_str and not reply_msg:
+        await event.edit("❗️ **Gagal Broadcast**\n\n**Cara Penggunaan:**\n"
+                         "1. `/broadcast <pesan> | <id1>,<id2>,...`\n"
+                         "2. Balas pesan: `/broadcast <id1>,<id2>,...`\n"
+                         "3. Gunakan `all_users` atau `all_groups` sebagai ID target.\n\n"
+                         "**Contoh:**\n"
+                         "`/broadcast Halo semua | all_users`\n"
+                         "`/broadcast Cek pengumuman | 12345678,-10012345678`")
+        return
+
+    m = await event.edit("🔄 Memulai proses broadcast...")
+
+    message_to_send = ""
+    target_str = ""
+
+    if reply_msg:
+        message_to_send = reply_msg
+        target_str = input_str
+    elif input_str and "|" in input_str:
+        parts = input_str.split('|', 1)
+        message_to_send = parts[0].strip()
+        target_str = parts[1].strip()
+    else:
+        await m.edit("❗️ Format perintah tidak valid. Gunakan `|` untuk memisahkan pesan dan target.")
+        return
+
+    if not target_str:
+        await m.edit("❗️ Target broadcast tidak ditentukan.")
+        return
+
+    targets = []
+    if "all_users" in target_str:
+        await m.edit("🔄 Mengambil semua pengguna...")
+        async for dialog in client.iter_dialogs():
+            if dialog.is_user and not dialog.entity.bot:
+                targets.append(dialog.id)
+    elif "all_groups" in target_str:
+        await m.edit("🔄 Mengambil semua grup...")
+        async for dialog in client.iter_dialogs():
+            if dialog.is_group or dialog.is_channel:
+                targets.append(dialog.id)
+    else:
+        try:
+            targets = [int(x.strip()) for x in target_str.split(',')]
+        except ValueError:
+            await m.edit("❗️ ID Target tidak valid. Harap pisahkan dengan koma.")
+            return
+
+    if not targets:
+        await m.edit("❗️ Tidak ada target yang valid untuk broadcast.")
+        return
+
+    await m.edit(f"🚀 Memulai broadcast ke {len(targets)} chat...")
+
+    successful_sends = 0
+    failed_sends = 0
+
+    for target_id in targets:
+        try:
+            if isinstance(message_to_send, str):
+                await client.send_message(target_id, message_to_send)
+            else: # Forward message
+                await client.forward_messages(target_id, message_to_send)
+            successful_sends += 1
+        except Exception:
+            failed_sends += 1
+        await asyncio.sleep(1.5) # Delay to avoid rate limits
+
+    summary = (f"✅ **Broadcast Selesai**\n\n"
+               f"- Berhasil terkirim: {successful_sends}\n"
+               f"- Gagal terkirim: {failed_sends}\n"
+               f"- Total target: {len(targets)}")
+
+    await m.edit(summary)
 
 @client.on(events.NewMessage(pattern=r'^/ping$'))
 async def ping(event):
