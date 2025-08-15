@@ -15,7 +15,6 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from datetime import datetime, timezone
 import asyncio
-from tempmail import TempMail
 
 API_ID = 25054644
 API_HASH = "d9c07f75d488f15cb655049af0fb686a"
@@ -937,62 +936,6 @@ async def handle_web_description(event):
         if os.path.exists(file_path):
             os.remove(file_path)
 
-
-temp_mail_address = None
-
-@client.on(events.NewMessage(pattern=r'^/tempmail(?: (.*))?$'))
-async def handle_tempmail(event):
-    sender = await event.get_sender()
-    if not mode_public and not await is_authorized(sender): return
-
-    if RAPIDAPI_KEY == "YOUR_RAPIDAPI_KEY":
-        await event.reply("❌ Kunci RapidAPI belum diatur. Silakan daftar di https://rapidapi.com/privatix-temp-mail-v1/api/privatix-temp-mail-v1 dan atur `RAPIDAPI_KEY` di file wanz.py.")
-        return
-
-    global temp_mail_address
-
-    cmd = (event.pattern_match.group(1) or "").strip()
-
-    tm = TempMail()
-    tm.set_header("privatix-temp-mail-v1.p.rapidapi.com", RAPIDAPI_KEY)
-
-    if cmd == "get":
-        m = await event.reply("⏳ Membuat email sementara...")
-        try:
-            # Note: get_email_address is not async, running in executor
-            loop = asyncio.get_event_loop()
-            temp_mail_address = await loop.run_in_executor(None, tm.get_email_address)
-            await m.edit(f"✅ Email sementara Anda: `{temp_mail_address}`\n\nGunakan `/tempmail check` untuk memeriksa kotak masuk.")
-        except Exception as e:
-            await m.edit(f"❌ Gagal membuat email: {e}")
-
-    elif cmd == "check":
-        if not temp_mail_address:
-            await event.reply("❗️ Anda belum membuat email. Gunakan `/tempmail get` terlebih dahulu.")
-            return
-
-        m = await event.reply(f"🔎 Memeriksa kotak masuk untuk `{temp_mail_address}`...")
-        try:
-            # Note: get_mailbox is not async, running in executor
-            loop = asyncio.get_event_loop()
-            mailbox = await loop.run_in_executor(None, lambda: tm.get_mailbox(email=temp_mail_address))
-            if not mailbox or (isinstance(mailbox, dict) and mailbox.get("error")):
-                await m.edit("Kotak masuk kosong.")
-                return
-
-            text = f"**Kotak Masuk untuk `{temp_mail_address}`:**\n\n"
-            for mail in mailbox:
-                text += f"**Dari:** `{mail['mail_from']}`\n"
-                text += f"**Subjek:** `{mail['mail_subject']}`\n"
-                text += f"**Waktu:** {datetime.fromtimestamp(mail['mail_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                text += "--------------------------------------\n"
-            await m.edit(text)
-
-        except Exception as e:
-            await m.edit(f"❌ Gagal memeriksa kotak masuk: {e}")
-
-    else:
-        await event.reply("**Perintah TempMail:**\n- `/tempmail get` - Membuat alamat email sementara baru.\n- `/tempmail check` - Memeriksa kotak masuk dari email yang dibuat.")
 
 
 @client.on(events.NewMessage(pattern=r'^/group$'))
