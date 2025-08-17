@@ -8,7 +8,7 @@ from telethon.tl.types import (
     UserStatusLastWeek,
     UserStatusLastMonth,
 )
-import time, psutil, requests, io, os, json, random
+import time, psutil, requests, io, os, json, random, sys, traceback
 from PIL import Image, ImageDraw, ImageFont
 from urllib.parse import quote
 import speech_recognition as sr
@@ -37,7 +37,7 @@ user_interaction_state = {}
 
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
-        json.dump({"welcome": {}, "anti_link": {}, "shortlinks": {}, "afk": {"is_afk": False, "message": "", "since": 0}, "cloned_users": []}, f)
+        json.dump({"welcome": {}, "anti_link": {}, "shortlinks": {}, "afk": {"is_afk": False, "message": "", "since": 0}, "cloned_users": [], "message_tracker_enabled": False}, f)
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -154,6 +154,9 @@ f"⚜️ONLY BASE BY MAVERICK⚜️\nMODE: {mode_text}\n\n"
 "/clone <@user/balas> - clone user\n"
 "/unclone <@user/balas> - hapus clone\n"
 "/clonelist - lihat daftar clone\n"
+"/eval <code> - eksekusi kode python\n"
+"/osint <user> - cek info user\n"
+"/trackmsg <on/off> - lacak pesan grup\n"
 "╠══════════════ BROADCAST ═════════════╣\n"
 "/cekuser - Cek semua pengguna\n"
 "/cekgroup - Cek semua grup\n"
@@ -1137,6 +1140,249 @@ async def kick_user(event):
         await event.reply(f"✅ Pengguna {target_user.first_name} (`{target_user.id}`) telah ditendang dari grup.")
     except Exception as e:
         await event.reply(f"❌ Gagal menendang pengguna: {e}")
+
+
+# --- Fitur Pelacak ---
+user_states = {}
+LOG_FILE = "message_log.txt"
+
+@client.on(events.NewMessage(pattern=r'^/trackmsg (on|off)$', outgoing=True))
+async def toggle_message_tracker(event):
+    if not await is_owner(await event.get_sender()):
+        return
+
+    action = event.pattern_match.group(1).lower()
+    data = load_data()
+    is_enabled = (action == "on")
+    data['message_tracker_enabled'] = is_enabled
+    save_data(data)
+
+    status = "diaktifkan" if is_enabled else "dinonaktifkan"
+    await event.edit(f"`✅ Pelacak pesan grup telah {status}.`")
+
+@client.on(events.UserUpdate)
+async def user_update_handler(event):
+    if not me:
+        return
+
+    user_id = event.user_id
+    try:
+        new_user = await client.get_entity(user_id)
+    except:
+        return # Gagal mendapatkan info user, mungkin user tidak terjangkau
+
+    old_user_info = user_states.get(user_id)
+
+    current_user_info = {
+        'username': new_user.username,
+        'first_name': new_user.first_name,
+        'last_name': new_user.last_name
+    }
+    user_states[user_id] = current_user_info
+
+    if not old_user_info:
+        return
+
+    changes = []
+    if old_user_info['username'] != new_user.username:
+        changes.append(f"Username: `{old_user_info['username']}` → `{new_user.username}`")
+    if old_user_info['first_name'] != new_user.first_name:
+        changes.append(f"Nama Depan: `{old_user_info['first_name']}` → `{new_user.first_name}`")
+    if old_user_info['last_name'] != new_user.last_name:
+        changes.append(f"Nama Belakang: `{old_user_info['last_name']}` → `{new_user.last_name}`")
+
+    if changes:
+        message = (
+            f"**⚠️ Perubahan Info Pengguna Terdeteksi**\n\n"
+            f"**Pengguna:** [{new_user.first_name}](tg://user?id={user_id})\n"
+            f"**ID:** `{user_id}`\n\n"
+            "**Perubahan:**\n" + "\n".join(changes)
+        )
+        try:
+            await client.send_message(me.id, message)
+        except:
+            pass
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: not e.is_private))
+async def message_logger(event):
+    data = load_data()
+    if not data.get('message_tracker_enabled', False):
+        return
+
+    try:
+        sender = await event.get_sender()
+        chat = await event.get_chat()
+
+        if not sender or not chat:
+            return
+
+        sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
+        log_message = (
+            f"[{event.date.strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"[{chat.title} ({chat.id})] "
+            f"{sender_name} ({sender.id}): "
+            f"{event.text or '(Pesan non-teks)'}\n"
+        )
+
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_message)
+    except Exception:
+        # Menghindari crash jika ada error saat logging
+        pass
+
+# --- Akhir Fitur Pelacak ---
+
+@client.on(events.NewMessage(pattern=r'^/eval(?:\s+([\s\S]+))?$', outgoing=True))
+async def evaluate(event):
+    if not await is_owner(await event.get_sender()):
+        return
+
+    code = event.pattern_match.group(1)
+    if not code:
+        await event.edit("`Berikan kode untuk dieksekusi.`")
+        return
+
+    m = await event.edit("`Mengeksekusi...`")
+
+    # Store old stdout and stderr
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    redirected_output = sys.stdout = io.StringIO()
+    redirected_error = sys.stderr = io.StringIO()
+
+    try:
+        # If the code starts with '!', treat it as a shell command
+        if code.strip().startswith("!"):
+            command = code.strip()[1:]
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            result = stdout.decode().strip()
+            error = stderr.decode().strip()
+        else:
+            # Prepare the async function to be executed
+            exec_code = f'async def __ex(event, client):\n    ' + '\n    '.join(code.split('\n'))
+
+            # Execute the code
+            exec(exec_code, globals(), locals())
+
+            # Call the async function
+            result_obj = await locals()['__ex'](event, client)
+            result = str(result_obj) if result_obj is not None else ""
+
+            # Get output from stdout
+            output = redirected_output.getvalue().strip()
+            if output:
+                result = output if not result else f"{result}\n{output}"
+
+            error = redirected_error.getvalue().strip()
+
+    except Exception:
+        error = traceback.format_exc()
+        result = ""
+    finally:
+        # Restore stdout and stderr
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+    # Format the output message
+    output_message = ""
+    if result:
+        output_message += f"**✅ HASIL:**\n```{result}```\n"
+    if error:
+        output_message += f"**❌ ERROR:**\n```{error}```\n"
+
+    if not output_message:
+        output_message = "`Eksekusi selesai tanpa output.`"
+
+    # Send the output
+    if len(output_message) > 4096:
+        with io.BytesIO(output_message.encode()) as f:
+            f.name = "eval_output.txt"
+            await m.edit("`Output terlalu panjang, mengirim sebagai file.`")
+            await client.send_file(event.chat_id, f, caption="Hasil Eksekusi")
+    else:
+        await m.edit(output_message)
+
+
+async def check_username(username, site_url_format):
+    """Asynchronously checks if a username exists on a given site."""
+    url = site_url_format.format(username=username)
+    try:
+        # Use asyncio.to_thread to run the blocking requests.get in a separate thread
+        response = await asyncio.to_thread(requests.get, url, timeout=5)
+        if response.status_code == 200:
+            return url
+    except requests.exceptions.RequestException:
+        pass
+    return None
+
+@client.on(events.NewMessage(pattern=r'^/osint(?:\s+(.+))?$'))
+async def osint(event):
+    if not await is_owner(await event.get_sender()):
+        return
+
+    m = await event.reply("`🔎 Melakukan penyelidikan OSINT...`")
+
+    target_user = await get_target_user(event)
+    if not target_user:
+        await m.edit("`❗️ Pengguna tidak ditemukan. Balas pesan atau berikan username/ID.`")
+        return
+
+    # 1. Get Telegram Info
+    try:
+        full = await client(GetFullUserRequest(target_user.id))
+        about = getattr(full, "about", "") or "-"
+        username = f"@{target_user.username}" if getattr(target_user, "username", None) else "Tidak ada"
+        name = f"{target_user.first_name or ''} {target_user.last_name or ''}".strip()
+
+        info_text = (
+            f"**👤 Informasi Dasar Telegram**\n\n"
+            f"**Nama:** {name}\n"
+            f"**Username:** {username}\n"
+            f"**User ID:** `{target_user.id}`\n"
+            f"**Bio:** `{about}`\n\n"
+            f"**Disclaimer:** Informasi di bawah ini adalah hasil pencarian otomatis berdasarkan username dan mungkin tidak akurat."
+        )
+    except Exception as e:
+        await m.edit(f"`❌ Gagal mendapatkan info Telegram: {e}`")
+        return
+
+    # 2. Check username on other platforms
+    if not target_user.username:
+        await m.edit(info_text + "\n\n`Tidak ada username untuk dicari di platform lain.`")
+        return
+
+    await m.edit(info_text + "\n\n`🕵️‍♂️ Mencari username di platform lain...`")
+
+    sites_to_check = {
+        "GitHub": "https://github.com/{username}",
+        "Twitter/X": "https://twitter.com/{username}",
+        "Instagram": "https://www.instagram.com/{username}",
+        "TikTok": "https://www.tiktok.com/@{username}",
+        "Reddit": "https://www.reddit.com/user/{username}",
+        "Pinterest": "https://www.pinterest.com/{username}/",
+    }
+
+    tasks = [check_username(target_user.username, url_format) for url_format in sites_to_check.values()]
+    results = await asyncio.gather(*tasks)
+
+    found_sites = []
+    site_names = list(sites_to_check.keys())
+    for i, url in enumerate(results):
+        if url:
+            found_sites.append(f"- [{site_names[i]}]({url})")
+
+    if found_sites:
+        found_text = "\n\n**🌐 Profil Ditemukan di Platform Lain:**\n" + "\n".join(found_sites)
+    else:
+        found_text = "\n\n`Tidak ada profil yang ditemukan di platform lain dengan username ini.`"
+
+    final_output = info_text + found_text
+    await m.edit(final_output, link_preview=False)
 
 
 async def main():
